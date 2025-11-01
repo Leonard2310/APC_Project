@@ -10,3 +10,4 @@
 .settings/org.eclipse.core.resources.prefs
 .settings/stm32cubeide.project.prefs
 STM32F303VCTX_FLASH.ld
+.DS_Store
