@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body - PIR + OLED + LED (no servo)
+  * @brief          : Main program body - PIR + OLED + LED + Push Button
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -13,20 +13,19 @@
 #include "gpio.h"
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
+#include <stdio.h>
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 
 /* USER CODE BEGIN 0 */
+#define COUNTDOWN_TIME 10  // secondi di attesa
 /* USER CODE END 0 */
 
 int main(void)
 {
-  /* Inizializzazione HAL e clock */
   HAL_Init();
   SystemClock_Config();
-
-  /* Inizializzazione periferiche */
   MX_GPIO_Init();
   MX_I2C1_Init();
 
@@ -39,14 +38,12 @@ int main(void)
   ssd1306_WriteString("In attesa...", Font_7x10, White);
   ssd1306_UpdateScreen();
 
-  /* Stato iniziale: LED rosso acceso */
+  /* LED iniziali */
   HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
 
-  /* Loop principale */
   while (1)
   {
-      /* Leggi stato PIR */
       GPIO_PinState pirState = HAL_GPIO_ReadPin(PIR_Signal_GPIO_Port, PIR_Signal_Pin);
 
       if (pirState == GPIO_PIN_SET)
@@ -58,30 +55,73 @@ int main(void)
           ssd1306_Fill(Black);
           ssd1306_SetCursor(10, 10);
           ssd1306_WriteString("MOVIMENTO!", Font_11x18, White);
-          ssd1306_SetCursor(10, 40);
-          ssd1306_WriteString("Presenza rilevata", Font_7x10, White);
+          ssd1306_SetCursor(10, 35);
+          ssd1306_WriteString("Attendere conferma", Font_7x10, White);
           ssd1306_UpdateScreen();
-      }
-      else
-      {
-          // Nessun movimento
-          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
+
+          uint8_t confirmed = 0;
+
+          for (int t = COUNTDOWN_TIME; t >= 0; t--)
+          {
+              char buffer[32];
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(10, 10);
+              ssd1306_WriteString("CONFERMA IN:", Font_7x10, White);
+
+              sprintf(buffer, "%2d sec", t);
+              ssd1306_SetCursor(40, 35);
+              ssd1306_WriteString(buffer, Font_11x18, White);
+              ssd1306_UpdateScreen();
+
+              // Controlla se il pulsante è premuto
+              if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8) == GPIO_PIN_RESET)
+              {
+                  confirmed = 1;
+                  break;
+              }
+
+              HAL_Delay(1000);  // 1 secondo
+          }
 
           ssd1306_Fill(Black);
-          ssd1306_SetCursor(10, 10);
-          ssd1306_WriteString("Nessun mov.", Font_11x18, White);
-          ssd1306_SetCursor(30, 40);
-          ssd1306_WriteString("Area libera", Font_7x10, White);
+          ssd1306_SetCursor(10, 20);
+
+          if (confirmed)
+          {
+              ssd1306_WriteString("BIGLIETTO", Font_11x18, White);
+              ssd1306_SetCursor(10, 45);
+              ssd1306_WriteString("COMPRATO", Font_11x18, White);
+              HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
+              HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
+          }
+          else
+          {
+              ssd1306_WriteString("ANNULLAMENTO", Font_11x18, White);
+              HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
+          }
+
           ssd1306_UpdateScreen();
+          HAL_Delay(3000);  // mostra il risultato per 3 s
+
+          // Ripristina schermata base
+          ssd1306_Fill(Black);
+          ssd1306_SetCursor(10, 10);
+          ssd1306_WriteString("Sistema PIR", Font_11x18, White);
+          ssd1306_SetCursor(10, 40);
+          ssd1306_WriteString("In attesa...", Font_7x10, White);
+          ssd1306_UpdateScreen();
+
+          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
       }
 
-      HAL_Delay(200);  // 5 aggiornamenti al secondo
+      HAL_Delay(200);
   }
 }
 
 /**
-  * @brief  Configurazione del clock di sistema
+  * @brief  Configurazione del clock
   */
 void SystemClock_Config(void)
 {
@@ -112,7 +152,7 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief  Gestione errori
+  * @brief Gestione errori
   */
 void Error_Handler(void)
 {

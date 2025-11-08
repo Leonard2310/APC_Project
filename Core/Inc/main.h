@@ -66,6 +66,8 @@ void Error_Handler(void);
 #define PIR_Signal_Pin GPIO_PIN_4
 #define PIR_Signal_GPIO_Port GPIOB
 #define PIR_Signal_EXTI_IRQn EXTI4_IRQn
+#define Button_Pin GPIO_PIN_8
+#define Button_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
