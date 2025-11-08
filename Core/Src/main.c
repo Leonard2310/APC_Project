@@ -14,14 +14,19 @@
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
 
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+
 /* USER CODE BEGIN 0 */
 /* USER CODE END 0 */
 
 int main(void)
 {
+  /* Inizializzazione HAL e clock */
   HAL_Init();
   SystemClock_Config();
 
+  /* Inizializzazione periferiche */
   MX_GPIO_Init();
   MX_I2C1_Init();
 
@@ -35,9 +40,10 @@ int main(void)
   ssd1306_UpdateScreen();
 
   /* Stato iniziale: LED rosso acceso */
-  HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
 
+  /* Loop principale */
   while (1)
   {
       /* Leggi stato PIR */
@@ -46,8 +52,8 @@ int main(void)
       if (pirState == GPIO_PIN_SET)
       {
           // Movimento rilevato
-          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
-          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
 
           ssd1306_Fill(Black);
           ssd1306_SetCursor(10, 10);
@@ -59,8 +65,8 @@ int main(void)
       else
       {
           // Nessun movimento
-          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
 
           ssd1306_Fill(Black);
           ssd1306_SetCursor(10, 10);
@@ -75,7 +81,7 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
+  * @brief  Configurazione del clock di sistema
   */
 void SystemClock_Config(void)
 {
@@ -106,7 +112,7 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief Error Handler
+  * @brief  Gestione errori
   */
 void Error_Handler(void)
 {
