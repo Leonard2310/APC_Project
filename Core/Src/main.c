@@ -17,7 +17,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+// Dichiarazione esterna del secondo timer (da tim.c)
+extern TIM_HandleTypeDef htim2;  // Timer per il secondo servo
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -27,7 +28,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define GREEN_LED_Pin GPIO_PIN_10
+#define GREEN_LED_GPIO_Port GPIOE
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -38,7 +40,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+volatile uint8_t secondPIR_triggered = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -51,12 +53,29 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN 0 */
 #define COUNTDOWN_TIME 10  // secondi di attesa
 
-// Funzione per impostare l'angolo del servo
+// Funzione per impostare l'angolo del primo servo (TIM3_CH3 - PB0)
 void Servo_SetAngle(uint8_t angle)
 {
     // ARR = 19999, PWM period 20ms
     uint16_t pulse = 1000 + ((angle * 1000) / 180); // da 1000 a 2000 µs
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, pulse);
+}
+
+// Funzione per impostare l'angolo del secondo servo (TIM2_CH3 - PB10)
+void Servo2_SetAngle(uint8_t angle)
+{
+    // ARR = 19999, PWM period 20ms
+    uint16_t pulse = 1000 + ((angle * 1000) / 180); // da 1000 a 2000 µs
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse);
+}
+
+// Callback per interrupt EXTI (secondo PIR)
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == GPIO_PIN_2) // Secondo PIR su EXTI2
+    {
+        secondPIR_triggered = 1;
+    }
 }
 
 /* USER CODE END 0 */
@@ -94,6 +113,7 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM3_Init();
   MX_I2C1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   // Inizializza OLED
   ssd1306_Init();
@@ -104,9 +124,10 @@ int main(void)
   ssd1306_WriteString("In attesa...", Font_7x10, White);
   ssd1306_UpdateScreen();
 
-  // LED iniziali
+  // LED iniziali - Solo blu acceso
   HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
 
   // NON avviare il PWM all'inizio - lo attiviamo solo quando serve
 
@@ -120,9 +141,10 @@ int main(void)
 
       if (pirState == GPIO_PIN_SET)
       {
-          // Movimento rilevato
+          // Movimento rilevato dal primo PIR
           HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
           HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
 
           ssd1306_Fill(Black);
           ssd1306_SetCursor(10, 10);
@@ -167,12 +189,12 @@ int main(void)
               HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
               HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
 
-              // Attiva il PWM e muovi il servo
+              // Attiva il PWM e muovi il PRIMO servo
               __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 1000);
               HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
               HAL_Delay(500); // Stabilizza
 
-              // Sequenza movimento servo
+              // Sequenza movimento primo servo
               Servo_SetAngle(0);
               HAL_Delay(2000);
               Servo_SetAngle(90);
@@ -180,10 +202,83 @@ int main(void)
               Servo_SetAngle(180);
               HAL_Delay(2000);
 
-              // Riporta il servo alla posizione iniziale e ferma il PWM
+              // Riporta il primo servo alla posizione iniziale e ferma il PWM
               Servo_SetAngle(0);
               HAL_Delay(1000);
               HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+
+              // Dopo che il primo servo ha finito, controlla il secondo PIR
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(10, 10);
+              ssd1306_WriteString("Attendere", Font_11x18, White);
+              ssd1306_SetCursor(10, 35);
+              ssd1306_WriteString("passaggio...", Font_11x18, White);
+              ssd1306_UpdateScreen();
+
+              // DISABILITA il primo PIR (PB4) temporaneamente
+              HAL_NVIC_DisableIRQ(EXTI4_IRQn);
+
+              // Reset flag secondo PIR
+              secondPIR_triggered = 0;
+
+              // Attendi rilevamento secondo PIR (senza timeout - attesa infinita)
+              while (!secondPIR_triggered)
+              {
+                  HAL_Delay(100);
+              }
+
+
+              // Secondo PIR ha rilevato movimento - Accendi LED verde
+              HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_SET);
+
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(10, 10);
+              ssd1306_WriteString("PASSAGGIO", Font_11x18, White);
+              ssd1306_SetCursor(10, 40);
+              ssd1306_WriteString("RILEVATO!", Font_11x18, White);
+              ssd1306_UpdateScreen();
+
+              HAL_Delay(2000);
+
+              // ATTIVA E MUOVI IL SECONDO SERVO (PB10) - SOLO DOPO RILEVAMENTO
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(10, 20);
+              ssd1306_WriteString("Apertura", Font_11x18, White);
+              ssd1306_SetCursor(10, 45);
+              ssd1306_WriteString("cancello...", Font_11x18, White);
+              ssd1306_UpdateScreen();
+
+              // Avvia PWM secondo servo
+              __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
+              HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+              HAL_Delay(500); // Stabilizza
+
+              // Sequenza movimento secondo servo
+              Servo2_SetAngle(0);
+              HAL_Delay(2000);
+              Servo2_SetAngle(90);
+              HAL_Delay(2000);
+              Servo2_SetAngle(180);
+              HAL_Delay(2000);
+
+              // Riporta il secondo servo alla posizione iniziale e ferma PWM
+              Servo2_SetAngle(0);
+              HAL_Delay(1000);
+              HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(10, 20);
+              ssd1306_WriteString("Cancello", Font_11x18, White);
+              ssd1306_SetCursor(10, 45);
+              ssd1306_WriteString("chiuso!", Font_11x18, White);
+              ssd1306_UpdateScreen();
+
+              HAL_Delay(2000);
+
+              // RIABILITA il primo PIR
+              HAL_NVIC_EnableIRQ(EXTI4_IRQn);
           }
           else
           {
@@ -192,6 +287,7 @@ int main(void)
 
               HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
               HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
+              HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
           }
 
           HAL_Delay(3000);  // mostra il risultato per 3 s
@@ -204,8 +300,10 @@ int main(void)
           ssd1306_WriteString("In attesa...", Font_7x10, White);
           ssd1306_UpdateScreen();
 
+          // Ripristina LED a stato iniziale (solo blu)
           HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
           HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
       }
 
       HAL_Delay(200);

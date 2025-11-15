@@ -59,6 +59,9 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define PWM_Servo_Pin GPIO_PIN_0
 #define PWM_Servo_GPIO_Port GPIOB
+#define PIR2_Signal_Pin GPIO_PIN_2
+#define PIR2_Signal_GPIO_Port GPIOB
+#define PIR2_Signal_EXTI_IRQn EXTI2_TSC_IRQn
 #define Blue_LED_Pin GPIO_PIN_8
 #define Blue_LED_GPIO_Port GPIOE
 #define Red_LED_Pin GPIO_PIN_9
