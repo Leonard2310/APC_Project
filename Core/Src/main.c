@@ -17,8 +17,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-// Dichiarazione esterna del secondo timer (da tim.c)
-extern TIM_HandleTypeDef htim2;  // Timer per il secondo servo
+extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim4;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -30,6 +30,9 @@ extern TIM_HandleTypeDef htim2;  // Timer per il secondo servo
 /* USER CODE BEGIN PD */
 #define GREEN_LED_Pin GPIO_PIN_10
 #define GREEN_LED_GPIO_Port GPIOE
+
+#define PIR3_LED_Pin GPIO_PIN_3
+#define PIR3_LED_GPIO_Port GPIOB
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,30 +54,46 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define COUNTDOWN_TIME 10  // secondi di attesa
+#define COUNTDOWN_TIME 10
 
-// Funzione per impostare l'angolo del primo servo (TIM3_CH3 - PB0)
 void Servo_SetAngle(uint8_t angle)
 {
-    // ARR = 19999, PWM period 20ms
-    uint16_t pulse = 1000 + ((angle * 1000) / 180); // da 1000 a 2000 µs
+    uint16_t pulse = 1000 + ((angle * 1000) / 180);
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, pulse);
 }
 
-// Funzione per impostare l'angolo del secondo servo (TIM2_CH3 - PB10)
 void Servo2_SetAngle(uint8_t angle)
 {
-    // ARR = 19999, PWM period 20ms
-    uint16_t pulse = 1000 + ((angle * 1000) / 180); // da 1000 a 2000 µs
+    uint16_t pulse = 1000 + ((angle * 1000) / 180);
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse);
 }
 
-// Callback per interrupt EXTI (secondo PIR)
+// Callback per interrupt EXTI
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    if (GPIO_Pin == GPIO_PIN_2) // Secondo PIR su EXTI2
+    // PIR2 - per il flusso biglietto/cancello
+    if (GPIO_Pin == GPIO_PIN_2)
     {
         secondPIR_triggered = 1;
+    }
+
+    // PIR3 - COMPLETAMENTE INDIPENDENTE
+    // Solo accende LED e avvia timer, nient'altro!
+    if (GPIO_Pin == GPIO_PIN_9)
+    {
+        HAL_GPIO_WritePin(PIR3_LED_GPIO_Port, PIR3_LED_Pin, GPIO_PIN_SET);
+        __HAL_TIM_SET_COUNTER(&htim4, 0);
+        HAL_TIM_Base_Start_IT(&htim4);
+    }
+}
+
+// Callback Timer - spegne LED PIR3 dopo 2 secondi
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM4)
+    {
+        HAL_GPIO_WritePin(PIR3_LED_GPIO_Port, PIR3_LED_Pin, GPIO_PIN_RESET);
+        HAL_TIM_Base_Stop_IT(&htim4);
     }
 }
 
@@ -86,23 +105,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
-  /* variabili utente */
   uint8_t confirmed = 0;
   char buffer[32];
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
 
-  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
@@ -114,8 +128,9 @@ int main(void)
   MX_TIM3_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
+  MX_TIM4_Init();
+
   /* USER CODE BEGIN 2 */
-  // Inizializza OLED
   ssd1306_Init();
   ssd1306_Fill(Black);
   ssd1306_SetCursor(10, 10);
@@ -124,12 +139,10 @@ int main(void)
   ssd1306_WriteString("In attesa...", Font_7x10, White);
   ssd1306_UpdateScreen();
 
-  // LED iniziali - Solo blu acceso
   HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
-
-  // NON avviare il PWM all'inizio - lo attiviamo solo quando serve
+  HAL_GPIO_WritePin(PIR3_LED_GPIO_Port, PIR3_LED_Pin, GPIO_PIN_RESET);
 
   /* USER CODE END 2 */
 
@@ -137,11 +150,12 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
+      // === GESTIONE PRIMO PIR ===
       GPIO_PinState pirState = HAL_GPIO_ReadPin(PIR_Signal_GPIO_Port, PIR_Signal_Pin);
 
       if (pirState == GPIO_PIN_SET)
       {
-          // Movimento rilevato dal primo PIR
           HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
           HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
           HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
@@ -166,14 +180,13 @@ int main(void)
               ssd1306_WriteString(buffer, Font_11x18, White);
               ssd1306_UpdateScreen();
 
-              // Controlla se il pulsante è premuto
               if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8) == GPIO_PIN_RESET)
               {
                   confirmed = 1;
                   break;
               }
 
-              HAL_Delay(1000);  // 1 secondo
+              HAL_Delay(1000);
           }
 
           ssd1306_Fill(Black);
@@ -189,12 +202,10 @@ int main(void)
               HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
               HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
 
-              // Attiva il PWM e muovi il PRIMO servo
               __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 1000);
               HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-              HAL_Delay(500); // Stabilizza
+              HAL_Delay(500);
 
-              // Sequenza movimento primo servo
               Servo_SetAngle(0);
               HAL_Delay(2000);
               Servo_SetAngle(90);
@@ -202,12 +213,10 @@ int main(void)
               Servo_SetAngle(180);
               HAL_Delay(2000);
 
-              // Riporta il primo servo alla posizione iniziale e ferma il PWM
               Servo_SetAngle(0);
               HAL_Delay(1000);
               HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
 
-              // Dopo che il primo servo ha finito, controlla il secondo PIR
               ssd1306_Fill(Black);
               ssd1306_SetCursor(10, 10);
               ssd1306_WriteString("Attendere", Font_11x18, White);
@@ -215,20 +224,15 @@ int main(void)
               ssd1306_WriteString("passaggio...", Font_11x18, White);
               ssd1306_UpdateScreen();
 
-              // DISABILITA il primo PIR (PB4) temporaneamente
               HAL_NVIC_DisableIRQ(EXTI4_IRQn);
 
-              // Reset flag secondo PIR
               secondPIR_triggered = 0;
 
-              // Attendi rilevamento secondo PIR (senza timeout - attesa infinita)
               while (!secondPIR_triggered)
               {
                   HAL_Delay(100);
               }
 
-
-              // Secondo PIR ha rilevato movimento - Accendi LED verde
               HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
               HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
               HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_SET);
@@ -242,7 +246,6 @@ int main(void)
 
               HAL_Delay(2000);
 
-              // ATTIVA E MUOVI IL SECONDO SERVO (PB10) - SOLO DOPO RILEVAMENTO
               ssd1306_Fill(Black);
               ssd1306_SetCursor(10, 20);
               ssd1306_WriteString("Apertura", Font_11x18, White);
@@ -250,12 +253,10 @@ int main(void)
               ssd1306_WriteString("cancello...", Font_11x18, White);
               ssd1306_UpdateScreen();
 
-              // Avvia PWM secondo servo
               __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
               HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-              HAL_Delay(500); // Stabilizza
+              HAL_Delay(500);
 
-              // Sequenza movimento secondo servo
               Servo2_SetAngle(0);
               HAL_Delay(2000);
               Servo2_SetAngle(90);
@@ -263,7 +264,6 @@ int main(void)
               Servo2_SetAngle(180);
               HAL_Delay(2000);
 
-              // Riporta il secondo servo alla posizione iniziale e ferma PWM
               Servo2_SetAngle(0);
               HAL_Delay(1000);
               HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
@@ -277,7 +277,6 @@ int main(void)
 
               HAL_Delay(2000);
 
-              // RIABILITA il primo PIR
               HAL_NVIC_EnableIRQ(EXTI4_IRQn);
           }
           else
@@ -290,9 +289,8 @@ int main(void)
               HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
           }
 
-          HAL_Delay(3000);  // mostra il risultato per 3 s
+          HAL_Delay(3000);
 
-          // Ripristina schermata base
           ssd1306_Fill(Black);
           ssd1306_SetCursor(10, 10);
           ssd1306_WriteString("Sistema PIR", Font_11x18, White);
@@ -300,13 +298,12 @@ int main(void)
           ssd1306_WriteString("In attesa...", Font_7x10, White);
           ssd1306_UpdateScreen();
 
-          // Ripristina LED a stato iniziale (solo blu)
           HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
           HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
           HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
       }
 
-      HAL_Delay(200);
+      HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -324,9 +321,6 @@ void SystemClock_Config(void)
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -336,8 +330,6 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
@@ -367,28 +359,14 @@ void SystemClock_Config(void)
   */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
   }
-  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

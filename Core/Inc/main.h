@@ -66,11 +66,16 @@ void Error_Handler(void);
 #define Blue_LED_GPIO_Port GPIOE
 #define Red_LED_Pin GPIO_PIN_9
 #define Red_LED_GPIO_Port GPIOE
+#define PIR3_LED_Pin GPIO_PIN_3
+#define PIR3_LED_GPIO_Port GPIOB
 #define PIR_Signal_Pin GPIO_PIN_4
 #define PIR_Signal_GPIO_Port GPIOB
 #define PIR_Signal_EXTI_IRQn EXTI4_IRQn
 #define Button_Pin GPIO_PIN_8
 #define Button_GPIO_Port GPIOB
+#define PIR3_Signal_Pin GPIO_PIN_9
+#define PIR3_Signal_GPIO_Port GPIOB
+#define PIR3_Signal_EXTI_IRQn EXTI9_5_IRQn
 
 /* USER CODE BEGIN Private defines */
 
