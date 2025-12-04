@@ -1,10 +1,38 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body - PIR + OLED + LED + Push Button + Servo
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body - Museum Access Control System
+ * @description    : This project implements an automated ticketing and access
+ *                   control system for a museum using PIR motion sensors,
+ *                   servo motors for turnstiles/gates, OLED display for user
+ *                   feedback, LEDs for status indication, and a push button
+ *                   for ticket purchase confirmation.
+ *
+ * @hardware       : STM32F303VCT6 Discovery Board
+ *                   - PIR1 (PB4): Entrance sensor - detects visitors approaching (polled)
+ *                   - PIR2 (PB2): Entry gate sensor - confirms visitor entry (EXTI2)
+ *                   - PIR3 (PB9): Ambient lighting sensor - independent (EXTI9)
+ *                   - PIR4 (PB15): Exit sensor - detects visitors leaving (EXTI15)
+ *                   - Servo1 (PB0/TIM3_CH3): Ticket turnstile
+ *                   - Servo2 (PB10/TIM2_CH3): Entry gate
+ *                   - Servo3 (PB1/TIM3_CH4): Exit gate
+ *                   - SSD1306 OLED Display (I2C1: PB6/PB7)
+ *                   - Blue LED (PE8): System idle/ready
+ *                   - Red LED (PE9): Transaction in progress
+ *                   - Green LED (PE10): Access granted
+ *                   - PIR3_LED (PB3), PIR3_LED2 (PB11): Ambient lighting
+ *                   - Button (PB8): Ticket purchase confirmation
+ *
+ * @features       : - Visitor counter with max capacity (4 visitors)
+ *                   - Automatic ticket sales blocking when museum is full
+ *                   - Smooth servo motor movements for gates
+ *                   - Independent ambient lighting system
+ *
+ * @authors        : Leonardo Catello, Salvatore Maione, Luisa Ciniglio, Roberta Granata
+ * @version        : 1.0
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -16,8 +44,15 @@
 #include <stdio.h>
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+
+/* External timer handles - declared in tim.c
+ * htim2: PWM timer for Servo2 (entry gate) on PB10, Channel 3
+ * htim3: PWM timer for Servo1 (ticket turnstile) on PB0, Channel 3
+ *        and Servo3 (exit gate) on PB1, Channel 4
+ * htim4: Base timer for PIR3 LED auto-off timeout (2 seconds) */
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim4;
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -27,11 +62,19 @@ extern TIM_HandleTypeDef htim4;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define GREEN_LED_Pin GPIO_PIN_10
+
+/* LED Pin Definitions
+ * Note: GREEN_LED (PE10) is configured in gpio.c but not named in CubeMX */
+#define GREEN_LED_Pin GPIO_PIN_10       // Green LED on PE10 - indicates access granted
 #define GREEN_LED_GPIO_Port GPIOE
 
-#define PIR3_LED_Pin GPIO_PIN_3
+/* PIR3_LED is already defined in main.h, redefined here for local clarity */
+#define PIR3_LED_Pin GPIO_PIN_3         // PIR3 ambient lighting LED on PB3
 #define PIR3_LED_GPIO_Port GPIOB
+
+/* Museum capacity configuration */
+#define MAX_VISITORS 4                  // Maximum number of visitors allowed in museum
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -42,8 +85,31 @@ extern TIM_HandleTypeDef htim4;
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+
+/**
+ * @brief Flag set by PIR2 interrupt to indicate visitor has entered through entry gate
+ * @note  Volatile because it's modified in ISR and read in main loop
+ */
 volatile uint8_t secondPIR_triggered = 0;
-volatile uint8_t pir4_servo_active = 0;  // Flag per gestire il servo del PIR4
+
+/**
+ * @brief Flag set by PIR4 interrupt to activate exit gate servo
+ * @note  Volatile because it's modified in ISR and read in main loop
+ */
+volatile uint8_t pir4_servo_active = 0;
+
+/**
+ * @brief Current number of visitors inside the museum
+ * @note  Incremented when visitor enters (Servo2), decremented when visitor exits (Servo3)
+ *        When reaches MAX_VISITORS, ticket sales are blocked
+ */
+volatile uint8_t visitor_count = 0;
+
+/**
+ * @brief Previous visitor count for detecting changes and updating display
+ */
+static uint8_t last_visitor_count = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -54,49 +120,86 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/** @brief Time in seconds for user to confirm ticket purchase */
 #define COUNTDOWN_TIME 10
 
-// Mappa l'angolo (0-180) in larghezza di impulso (500-2400 us per SG90)
+/**
+ * @brief  Sets the servo motor to a specific angle
+ * @param  htim: Pointer to the timer handle controlling the servo PWM
+ * @param  channel: Timer channel (TIM_CHANNEL_3 or TIM_CHANNEL_4)
+ * @param  angle: Desired angle in degrees (0-180)
+ * @note   Maps angle (0-180°) to pulse width (500-2500µs) for SG90 servo
+ *         Standard servo timing: 500µs = 0°, 1500µs = 90°, 2500µs = 180°
+ *         Timer configuration (TIM2/TIM3):
+ *         - Prescaler = 7 → Timer clock = 8MHz / 8 = 1MHz
+ *         - Period = 19999 → PWM period = 20ms (50Hz)
+ *         - Compare values 500-2500 directly map to µs
+ * @retval None
+ */
 void Servo_SetAngle(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t angle)
 {
-    if (angle > 180) angle = 180; // Sicurezza
+    /* Clamp angle to valid range */
+    if (angle > 180) angle = 180;
 
-    // Mappiamo 0-180 gradi su 500-2500 impulsi
-    // Formula: pulse = 500 + (angle * (2000 / 180))
+    /* Calculate pulse width: linear mapping from 0-180° to 500-2500µs
+     * Formula: pulse = 500 + (angle * 2000 / 180)
+     * Using integer arithmetic to avoid floating point operations */
     uint32_t pulse = 500 + (angle * 2000 / 180);
 
+    /* Set the PWM compare value to control servo position */
     __HAL_TIM_SET_COMPARE(htim, channel, pulse);
 }
 
-// Callback per interrupt EXTI
+/**
+ * @brief  External interrupt callback for GPIO pins
+ * @param  GPIO_Pin: The pin that triggered the interrupt
+ * @note   Handles interrupts from:
+ *         - PIR2 (PB2, GPIO_PIN_2): Entry gate passage detection
+ *         - PIR3 (PB9, GPIO_PIN_9): Ambient lighting activation
+ *         - PIR4 (PB15, GPIO_PIN_15): Exit gate activation
+ *         Note: PIR1 (PB4) is handled via polling in main loop
+ * @retval None
+ */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    // PIR2 - per il flusso biglietto/cancello
+    /* PIR2 (PB2) - Detects visitor passing through entry gate after ticket purchase */
     if (GPIO_Pin == GPIO_PIN_2)
     {
         secondPIR_triggered = 1;
     }
 
-    // PIR3 - COMPLETAMENTE INDIPENDENTE
-    // Solo accende LED e avvia timer, nient'altro!
+    /* PIR3 (PB9) - Independent ambient lighting sensor
+     * Turns on LEDs immediately and starts timer for auto-off */
     else if (GPIO_Pin == GPIO_PIN_9)
     {
+        /* Turn on both ambient lighting LEDs */
         HAL_GPIO_WritePin(PIR3_LED_GPIO_Port, PIR3_LED_Pin, GPIO_PIN_SET);
         HAL_GPIO_WritePin(PIR3_LED2_GPIO_Port, PIR3_LED2_Pin, GPIO_PIN_SET);
+
+        /* Reset and start TIM4 for LED timeout
+         * TIM4 config: Prescaler=7999, Period=1999 → 2 second timeout
+         * Calculation: 8MHz / 8000 = 1kHz; 2000 ticks / 1kHz = 2s */
         __HAL_TIM_SET_COUNTER(&htim4, 0);
         HAL_TIM_Base_Start_IT(&htim4);
     }
 
-    // PIR4 - COMPLETAMENTE INDIPENDENTE - Attiva il servo 3
+    /* PIR4 (PB15) - Exit sensor - activates exit gate servo */
     else if (GPIO_Pin == GPIO_PIN_15)
     {
-        pir4_servo_active = 1;  // Attiva il movimento del servo
+        pir4_servo_active = 1;
     }
 }
 
-// Callback Timer - spegne LED PIR3 dopo 2 secondi
+/**
+ * @brief  Timer period elapsed callback
+ * @param  htim: Pointer to the timer handle that triggered the callback
+ * @note   Used by TIM4 to automatically turn off ambient lighting LEDs after timeout
+ * @retval None
+ */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
+    /* TIM4 callback - Turn off ambient lighting LEDs after 2 second timeout */
     if (htim->Instance == TIM4)
     {
         HAL_GPIO_WritePin(PIR3_LED_GPIO_Port, PIR3_LED_Pin, GPIO_PIN_RESET);
@@ -105,34 +208,46 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
 }
 
-// Gestione completamente indipendente del PIR4 e Servo 3
-void PIR4_Servo3_Handler(void)
+/**
+ * @brief  Handles exit gate operation triggered by PIR4
+ * @note   Operates Servo3 (TIM3_CH4) on PB1 for visitor exit
+ *         Decrements visitor counter when gate opens, allowing new ticket sales
+ *         if count drops below MAX_VISITORS
+ * @retval None
+ */
+void PIR4_ExitGate_Handler(void)
 {
     if (pir4_servo_active)
     {
-        pir4_servo_active = 0;  // Reset flag
+        pir4_servo_active = 0;  /* Reset flag immediately */
 
-        // Avvia PWM
+        /* Decrement visitor counter (check underflow) */
+        if (visitor_count > 0)
+        {
+            visitor_count--;
+        }
+
+        /* Start PWM for Servo3 (exit gate) */
         HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 
-        // Apertura: 0 → 180 gradi
+        /* Smooth opening motion: 0° -> 180° (step 2°, 15ms delay) */
         for (int angolo = 0; angolo <= 180; angolo += 2)
         {
             Servo_SetAngle(&htim3, TIM_CHANNEL_4, angolo);
             HAL_Delay(15);
         }
 
-        // Pausa a cancello aperto
+        /* Keep exit gate open for 5 seconds */
         HAL_Delay(5000);
 
-        // Chiusura: 180 → 0 gradi
+        /* Smooth closing motion: 180° -> 0° */
         for (int angolo = 180; angolo >= 0; angolo -= 2)
         {
             Servo_SetAngle(&htim3, TIM_CHANNEL_4, angolo);
             HAL_Delay(15);
         }
 
-        // Ferma PWM
+        /* Stop PWM */
         HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
     }
 }
@@ -147,8 +262,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  uint8_t confirmed = 0;
-  char buffer[32];
+  uint8_t confirmed = 0;      /* Flag to track if ticket was confirmed */
+  char buffer[32];            /* Buffer for sprintf display formatting */
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -173,32 +288,40 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_TIM4_Init();
+
   /* USER CODE BEGIN 2 */
+
+  /* ========== OLED Display Initialization ========== */
   ssd1306_Init();
   ssd1306_Fill(Black);
-  ssd1306_SetCursor(10, 10);
-  ssd1306_WriteString("Sistema PIR", Font_11x18, White);
-  ssd1306_SetCursor(10, 40);
-  ssd1306_WriteString("In attesa...", Font_7x10, White);
+  ssd1306_SetCursor(20, 5);
+  ssd1306_WriteString("MUSEUM", Font_11x18, White);
+  ssd1306_SetCursor(15, 28);
+  ssd1306_WriteString("Welcome!", Font_11x18, White);
+  ssd1306_SetCursor(15, 50);
+  ssd1306_WriteString("Visitors: 0/4", Font_7x10, White);
   ssd1306_UpdateScreen();
 
+  /* ========== LED Initial State ========== */
+  /* Blue LED ON = System ready and waiting for visitors */
   HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(PIR3_LED_GPIO_Port, PIR3_LED_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(PIR3_LED2_GPIO_Port, PIR3_LED2_Pin, GPIO_PIN_RESET);
 
-  // Inizializza Servo 1 (TIM3 CH3)
+  /* ========== Servo Motors Initialization ========== */
+  /* Initialize Servo1 (ticket turnstile) to closed position (0°) - TIM3_CH3 */
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   Servo_SetAngle(&htim3, TIM_CHANNEL_3, 0);
   HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
 
-  // Inizializza Servo 2 (TIM2 CH3)
+  /* Initialize Servo2 (entry gate) to closed position (0°) - TIM2_CH3 */
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
   Servo_SetAngle(&htim2, TIM_CHANNEL_3, 0);
   HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
 
-  // Inizializza Servo 3 (TIM3 CH4) - PIR4
+  /* Initialize Servo3 (exit gate) to closed position (0°) - TIM3_CH4 */
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
   Servo_SetAngle(&htim3, TIM_CHANNEL_4, 0);
   HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_4);
@@ -210,179 +333,291 @@ int main(void)
   while (1)
   {
 
+      /* ================================================================
+       * ENTRANCE PIR SENSOR (PIR1 on PB4) - VISITOR DETECTION
+       * ================================================================
+       * This sensor is polled (not interrupt-driven) because the system
+       * needs to be in idle state to start a new ticket transaction.
+       *
+       * Flow: Detect visitor -> Check capacity -> Show countdown
+       *       -> Wait for button press -> If confirmed: open turnstile
+       *       -> Wait for PIR2 -> Open entry gate -> Increment counter
+       *       -> Return to idle
+       * ================================================================ */
 
-      // === GESTIONE PRIMO PIR ===
       GPIO_PinState pirState = HAL_GPIO_ReadPin(PIR_Signal_GPIO_Port, PIR_Signal_Pin);
 
       if (pirState == GPIO_PIN_SET)
       {
-          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
-          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
-
-          ssd1306_Fill(Black);
-          ssd1306_SetCursor(10, 10);
-          ssd1306_WriteString("MOVIMENTO!", Font_11x18, White);
-          ssd1306_SetCursor(10, 35);
-          ssd1306_WriteString("Attendere conferma", Font_7x10, White);
-          ssd1306_UpdateScreen();
-
-          confirmed = 0;
-
-          for (int t = COUNTDOWN_TIME; t >= 0; t--)
+          /* ---------- Check Museum Capacity ---------- */
+          if (visitor_count >= MAX_VISITORS)
           {
-              ssd1306_Fill(Black);
-              ssd1306_SetCursor(10, 10);
-              ssd1306_WriteString("CONFERMA IN:", Font_7x10, White);
-
-              sprintf(buffer, "%2d sec", t);
-              ssd1306_SetCursor(40, 35);
-              ssd1306_WriteString(buffer, Font_11x18, White);
-              ssd1306_UpdateScreen();
-
-              if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8) == GPIO_PIN_RESET)
-              {
-                  confirmed = 1;
-                  break;
-              }
-
-              HAL_Delay(1000);
-          }
-
-          ssd1306_Fill(Black);
-          ssd1306_SetCursor(10, 20);
-
-          if (confirmed)
-          {
-              ssd1306_WriteString("BIGLIETTO", Font_11x18, White);
-              ssd1306_SetCursor(10, 45);
-              ssd1306_WriteString("COMPRATO", Font_11x18, White);
-              ssd1306_UpdateScreen();
-
+              /* Museum is full - display warning message */
               HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
               HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
 
-              __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 1000);
-              HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-
-              // UNICO movimento fluido da 0 a 180
-              for (int angolo = 0; angolo <= 180; angolo += 2)
-              {
-                      Servo_SetAngle(&htim3, TIM_CHANNEL_3,angolo);
-                      HAL_Delay(15);
-              }
-
-              // Pausa a cancello aperto
-              HAL_Delay(5000);
-
-              // --- RITORNO (Chiusura) ---
-              // UNICO movimento fluido da 180 a 0
-              for (int angolo = 180; angolo >= 0; angolo -= 2)
-              {
-                      Servo_SetAngle(&htim3, TIM_CHANNEL_3,angolo);
-                      HAL_Delay(15);
-              }
-
-              HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
-
               ssd1306_Fill(Black);
-              ssd1306_SetCursor(10, 10);
-              ssd1306_WriteString("Attendere", Font_11x18, White);
-              ssd1306_SetCursor(10, 35);
-              ssd1306_WriteString("passaggio...", Font_11x18, White);
+              ssd1306_SetCursor(20, 5);
+              ssd1306_WriteString("MUSEUM", Font_11x18, White);
+              ssd1306_SetCursor(35, 28);
+              ssd1306_WriteString("FULL", Font_11x18, White);
+              ssd1306_SetCursor(15, 50);
+              ssd1306_WriteString("Please wait...", Font_7x10, White);
               ssd1306_UpdateScreen();
 
-              HAL_NVIC_DisableIRQ(EXTI4_IRQn);
+              HAL_Delay(3000);
 
-              secondPIR_triggered = 0;
-
-              while (!secondPIR_triggered)
-              {
-                  HAL_Delay(100);
-              }
-
+              /* Return to idle with full status */
               HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
-              HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
-              HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_SET);
+              HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
 
               ssd1306_Fill(Black);
-              ssd1306_SetCursor(10, 10);
-              ssd1306_WriteString("PASSAGGIO", Font_11x18, White);
-              ssd1306_SetCursor(10, 40);
-              ssd1306_WriteString("RILEVATO!", Font_11x18, White);
+              ssd1306_SetCursor(20, 5);
+              ssd1306_WriteString("MUSEUM", Font_11x18, White);
+              ssd1306_SetCursor(35, 28);
+              ssd1306_WriteString("FULL", Font_11x18, White);
+              sprintf(buffer, "Visitors: %d/%d", visitor_count, MAX_VISITORS);
+              ssd1306_SetCursor(15, 50);
+              ssd1306_WriteString(buffer, Font_7x10, White);
               ssd1306_UpdateScreen();
-
-              HAL_Delay(2000);
-
-              ssd1306_Fill(Black);
-              ssd1306_SetCursor(10, 20);
-              ssd1306_WriteString("Apertura", Font_11x18, White);
-              ssd1306_SetCursor(10, 45);
-              ssd1306_WriteString("cancello...", Font_11x18, White);
-              ssd1306_UpdateScreen();
-
-              __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
-              HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-
-              // UNICO movimento fluido da 0 a 180
-              for (int angolo = 0; angolo <= 180; angolo += 2)
-              {
-                      Servo_SetAngle(&htim2, TIM_CHANNEL_3,angolo);
-                      HAL_Delay(15);
-              }
-
-              // Pausa a cancello aperto
-              HAL_Delay(5000);
-
-              // --- RITORNO (Chiusura) ---
-              // UNICO movimento fluido da 180 a 0
-              for (int angolo = 180; angolo >= 0; angolo -= 2)
-              {
-                      Servo_SetAngle(&htim2, TIM_CHANNEL_3, angolo);
-                      HAL_Delay(15);
-              }
-
-              HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
-
-              ssd1306_Fill(Black);
-              ssd1306_SetCursor(10, 20);
-              ssd1306_WriteString("Cancello", Font_11x18, White);
-              ssd1306_SetCursor(10, 45);
-              ssd1306_WriteString("chiuso!", Font_11x18, White);
-              ssd1306_UpdateScreen();
-
-              HAL_Delay(2000);
-
-              HAL_NVIC_EnableIRQ(EXTI4_IRQn);
           }
           else
           {
-              ssd1306_WriteString("ANNULLAMENTO", Font_11x18, White);
+              /* ---------- Visitor Detected - Start Ticket Process ---------- */
+              /* Red LED ON = Transaction in progress */
+              HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_SET);
+              HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
+              HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
+
+              /* Display welcome message */
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(15, 5);
+              ssd1306_WriteString("Welcome!", Font_11x18, White);
+              ssd1306_SetCursor(5, 30);
+              ssd1306_WriteString("Press button to", Font_7x10, White);
+              ssd1306_SetCursor(5, 45);
+              ssd1306_WriteString("buy ticket", Font_7x10, White);
               ssd1306_UpdateScreen();
 
-              HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+              confirmed = 0;
+
+              /* ---------- Countdown Timer with Button Check ---------- */
+              /* Visitor has COUNTDOWN_TIME seconds to press the button */
+              for (int t = COUNTDOWN_TIME; t >= 0; t--)
+              {
+                  /* Update countdown display */
+                  ssd1306_Fill(Black);
+                  ssd1306_SetCursor(5, 5);
+                  ssd1306_WriteString("Purchase in:", Font_7x10, White);
+
+                  sprintf(buffer, "%2d sec", t);
+                  ssd1306_SetCursor(40, 28);
+                  ssd1306_WriteString(buffer, Font_11x18, White);
+
+                  sprintf(buffer, "Visitors: %d/%d", visitor_count, MAX_VISITORS);
+                  ssd1306_SetCursor(15, 50);
+                  ssd1306_WriteString(buffer, Font_7x10, White);
+                  ssd1306_UpdateScreen();
+
+                  /* Check if confirmation button (PB8) is pressed (active low with pull-up) */
+                  if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8) == GPIO_PIN_RESET)
+                  {
+                      confirmed = 1;
+                      break;
+                  }
+
+                  HAL_Delay(1000);  /* Wait 1 second per countdown tick */
+              }
+
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(10, 10);
+
+              if (confirmed)
+              {
+                  /* ========== TICKET CONFIRMED - BEGIN ENTRY SEQUENCE ========== */
+
+                  /* Display ticket purchased message */
+                  ssd1306_WriteString("Ticket", Font_11x18, White);
+                  ssd1306_SetCursor(10, 35);
+                  ssd1306_WriteString("Purchased!", Font_11x18, White);
+                  ssd1306_UpdateScreen();
+
+                  HAL_Delay(2000);
+
+                  /* ---------- SERVO 1 (TIM3_CH3): Ticket Turnstile ---------- */
+                  ssd1306_Fill(Black);
+                  ssd1306_SetCursor(20, 20);
+                  ssd1306_WriteString("Please", Font_11x18, White);
+                  ssd1306_SetCursor(10, 45);
+                  ssd1306_WriteString("proceed...", Font_11x18, White);
+                  ssd1306_UpdateScreen();
+
+                  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 1000);
+                  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+
+                  /* Smooth opening motion: 0° -> 180° (step 2°, 15ms delay) */
+                  for (int angolo = 0; angolo <= 180; angolo += 2)
+                  {
+                      Servo_SetAngle(&htim3, TIM_CHANNEL_3, angolo);
+                      HAL_Delay(15);
+                  }
+
+                  /* Keep turnstile open for 5 seconds */
+                  HAL_Delay(5000);
+
+                  /* Smooth closing motion: 180° -> 0° */
+                  for (int angolo = 180; angolo >= 0; angolo -= 2)
+                  {
+                      Servo_SetAngle(&htim3, TIM_CHANNEL_3, angolo);
+                      HAL_Delay(15);
+                  }
+
+                  HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_3);
+
+                  /* ---------- Wait for Visitor to Pass Through (PIR2 on PB2) ---------- */
+                  ssd1306_Fill(Black);
+                  ssd1306_SetCursor(20, 20);
+                  ssd1306_WriteString("Please", Font_11x18, White);
+                  ssd1306_SetCursor(25, 45);
+                  ssd1306_WriteString("wait...", Font_11x18, White);
+                  ssd1306_UpdateScreen();
+
+                  /* Disable EXTI4 (PIR1) to prevent new transactions during wait */
+                  HAL_NVIC_DisableIRQ(EXTI4_IRQn);
+
+                  /* Clear flag and wait for PIR2 interrupt */
+                  secondPIR_triggered = 0;
+                  while (!secondPIR_triggered)
+                  {
+                      HAL_Delay(100);  /* Polling with small delay to reduce CPU usage */
+                  }
+
+                  /* ---------- Entry Detected - Open Entry Gate ---------- */
+                  /* Green LED ON = Access granted */
+                  HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+                  HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_RESET);
+                  HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_SET);
+
+                  /* Display access granted message */
+                  ssd1306_Fill(Black);
+                  ssd1306_SetCursor(30, 10);
+                  ssd1306_WriteString("Access", Font_11x18, White);
+                  ssd1306_SetCursor(20, 35);
+                  ssd1306_WriteString("Granted!", Font_11x18, White);
+                  ssd1306_UpdateScreen();
+
+                  HAL_Delay(2000);
+
+                  /* Display gate opening message */
+                  ssd1306_Fill(Black);
+                  ssd1306_SetCursor(25, 20);
+                  ssd1306_WriteString("Entry", Font_11x18, White);
+                  ssd1306_SetCursor(15, 45);
+                  ssd1306_WriteString("opening...", Font_11x18, White);
+                  ssd1306_UpdateScreen();
+
+                  /* ---------- SERVO 2 (TIM2_CH3): Entry Gate ---------- */
+                  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1000);
+                  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+
+                  /* Smooth opening motion: 0° -> 180° */
+                  for (int angolo = 0; angolo <= 180; angolo += 2)
+                  {
+                      Servo_SetAngle(&htim2, TIM_CHANNEL_3, angolo);
+                      HAL_Delay(15);
+                  }
+
+                  /* Keep entry gate open for 5 seconds */
+                  HAL_Delay(5000);
+
+                  /* Smooth closing motion: 180° -> 0° */
+                  for (int angolo = 180; angolo >= 0; angolo -= 2)
+                  {
+                      Servo_SetAngle(&htim2, TIM_CHANNEL_3, angolo);
+                      HAL_Delay(15);
+                  }
+
+                  HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+
+                  /* Increment visitor counter after successful entry */
+                  visitor_count++;
+
+                  /* Display welcome message with updated counter */
+                  ssd1306_Fill(Black);
+                  ssd1306_SetCursor(25, 10);
+                  ssd1306_WriteString("Enjoy", Font_11x18, White);
+                  ssd1306_SetCursor(10, 35);
+                  ssd1306_WriteString("your visit!", Font_11x18, White);
+                  ssd1306_UpdateScreen();
+
+                  HAL_Delay(2000);
+
+                  /* Re-enable EXTI4 interrupt (PIR1) */
+                  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+              }
+              else
+              {
+                  /* ========== TIMEOUT - TICKET NOT PURCHASED ========== */
+                  ssd1306_WriteString("Purchase", Font_11x18, White);
+                  ssd1306_SetCursor(10, 35);
+                  ssd1306_WriteString("Cancelled", Font_11x18, White);
+                  ssd1306_UpdateScreen();
+
+                  /* Blue LED ON = Back to idle state */
+                  HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
+                  HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
+                  HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
+              }
+
+              /* Wait before returning to idle state */
+              HAL_Delay(3000);
+
+              /* ---------- Return to Idle State ---------- */
+              ssd1306_Fill(Black);
+              ssd1306_SetCursor(20, 5);
+              ssd1306_WriteString("MUSEUM", Font_11x18, White);
+              ssd1306_SetCursor(15, 28);
+              ssd1306_WriteString("Welcome!", Font_11x18, White);
+              sprintf(buffer, "Visitors: %d/%d", visitor_count, MAX_VISITORS);
+              ssd1306_SetCursor(15, 50);
+              ssd1306_WriteString(buffer, Font_7x10, White);
+              ssd1306_UpdateScreen();
+
+              /* Reset LEDs to idle state (Blue ON only) */
               HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
+              HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
               HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
           }
-
-          HAL_Delay(3000);
-
-          ssd1306_Fill(Black);
-          ssd1306_SetCursor(10, 10);
-          ssd1306_WriteString("Sistema PIR", Font_11x18, White);
-          ssd1306_SetCursor(10, 40);
-          ssd1306_WriteString("In attesa...", Font_7x10, White);
-          ssd1306_UpdateScreen();
-
-          HAL_GPIO_WritePin(GPIOE, Blue_LED_Pin, GPIO_PIN_SET);
-          HAL_GPIO_WritePin(GPIOE, Red_LED_Pin, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(GREEN_LED_GPIO_Port, GREEN_LED_Pin, GPIO_PIN_RESET);
       }
 
-      // Gestione completamente indipendente PIR4 + Servo 3
-      PIR4_Servo3_Handler();
+      /* ================================================================
+       * EXIT GATE HANDLER - Independent from ticket purchase flow
+       * ================================================================
+       * PIR4 triggers exit gate (Servo3) and decrements visitor counter
+       * This allows new visitors to enter if museum was full
+       * ================================================================ */
+      PIR4_ExitGate_Handler();
 
+      /* Update display only when visitor count changes (after exit) */
+      if (visitor_count != last_visitor_count && pirState != GPIO_PIN_SET)
+      {
+          last_visitor_count = visitor_count;
+
+          /* Refresh idle screen with updated visitor count */
+          ssd1306_Fill(Black);
+          ssd1306_SetCursor(20, 5);
+          ssd1306_WriteString("MUSEUM", Font_11x18, White);
+          ssd1306_SetCursor(15, 28);
+          ssd1306_WriteString("Welcome!", Font_11x18, White);
+          sprintf(buffer, "Visitors: %d/%d", visitor_count, MAX_VISITORS);
+          ssd1306_SetCursor(15, 50);
+          ssd1306_WriteString(buffer, Font_7x10, White);
+          ssd1306_UpdateScreen();
+      }
+
+      /* Main loop delay - prevents excessive CPU usage during polling */
       HAL_Delay(100);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -391,9 +626,11 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief  System Clock Configuration
+ * @note   Configures HSI as system clock source at 8MHz
+ *         No PLL is used in this configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -401,8 +638,8 @@ void SystemClock_Config(void)
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -413,7 +650,7 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
+   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
@@ -425,6 +662,8 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+
+  /* Configure I2C1 clock source as HSI */
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
@@ -438,9 +677,11 @@ void SystemClock_Config(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @note   Disables interrupts and enters infinite loop
+ *         User can add debug output or LED indication here
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -448,18 +689,21 @@ void Error_Handler(void)
   __disable_irq();
   while (1)
   {
+    /* Stay here indefinitely - system halted due to error */
   }
   /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @note   This function is called when wrong parameters are passed to HAL functions
+ *         Only active when USE_FULL_ASSERT is defined
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
