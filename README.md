@@ -228,7 +228,7 @@ APC_Project/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/Leonard2310/APC_Project.git
+   git clone https://github.com/Leonard2310/MACS.git
    ```
 
 2. **Open the project in STM32CubeIDE**
