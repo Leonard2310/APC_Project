@@ -7,13 +7,26 @@
    <img src="https://img.shields.io/badge/License-GPLv3-yellow" alt="License">
 </p>
 
-## 📋 Overview
+## Table of Contents
+
+- [Overview](#overview)
+- [Hardware Architecture](#hardware-architecture)
+- [Timer Configuration](#timer-configuration)
+- [System Behaviour](#system-behaviour)
+- [Project Structure](#project-structure)
+- [Build and Flash](#build-and-flash)
+- [Technical Specifications](#technical-specifications)
+- [Key Functions](#key-functions)
+- [Authors](#authors)
+- [License](#license)
+
+## Overview
 
 **MACS** (Museum Access Control System) is an embedded system for automated access control in museums, developed on the **STM32F303VCT6 Discovery Board**. The system manages the full visitor flow (entry and exit) using PIR motion sensors, servo motors for turnstiles/gates, an SSD1306 OLED display for user feedback, and status LEDs.
 
 The project was developed using **STM32CubeIDE** and the firmware package **STM32Cube_FW_F3_V1.11.0**.
 
-### 🎯 Project Goals
+### Project Goals
 
 - Automate ticket purchase and entrance flow
 - Enforce a maximum museum capacity (4 visitors)
@@ -23,7 +36,7 @@ The project was developed using **STM32CubeIDE** and the firmware package **STM3
 
 ---
 
-## 🏗️ Hardware Architecture
+## Hardware Architecture
 
 ### Development Board
 - **MCU**: STM32F303VCT6 (ARM Cortex-M4, 72MHz, 256KB Flash, 48KB SRAM)
@@ -76,7 +89,7 @@ The project was developed using **STM32CubeIDE** and the firmware package **STM3
 
 ---
 
-## ⚙️ Timer Configuration
+## Timer Configuration
 
 ### PWM Timers (Servo Control)
 
@@ -102,7 +115,7 @@ The project was developed using **STM32CubeIDE** and the firmware package **STM3
 
 ---
 
-## 🔄 System Behaviour
+## System Behaviour
 
 ### 1. Idle State
 ```
@@ -169,7 +182,7 @@ The project was developed using **STM32CubeIDE** and the firmware package **STM3
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 APC_Project/
@@ -204,7 +217,7 @@ APC_Project/
 
 ---
 
-## 🛠️ Build and Flash
+## Build and Flash
 
 ### Prerequisites
 - **STM32CubeIDE** (v1.13.0 or later)
@@ -235,7 +248,7 @@ APC_Project/
 
 ---
 
-## 📊 Technical Specifications
+## Technical Specifications
 
 | Parameter | Value |
 |-----------|-------|
@@ -250,7 +263,7 @@ APC_Project/
 
 ---
 
-## 🔧 Key Functions
+## Key Functions
 
 ### `Servo_SetAngle(htim, channel, angle)`
 Sets the servo angle (0–180°) by mapping the angle to the PWM pulse width.
@@ -266,11 +279,8 @@ Updates the OLED display with the current system state and visitor counter.
 
 ---
 
-## 👥 Authors
+## Authors
 
-- **Salvatore Maione**
-- **Luisa Ciniglio**
-- **Roberta Granata**
 - [Leonardo Catello](https://github.com/Leonard2310)
 - [Salvatore Maione](https://github.com/salvatore22maione)
 - [Luisa Ciniglio](https://github.com/luisaciny)
@@ -278,7 +288,7 @@ Updates the OLED display with the current system state and visitor counter.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.  
 See the [LICENSE](LICENSE) file for full details.
