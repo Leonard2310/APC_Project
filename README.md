@@ -233,7 +233,7 @@ APC_Project/
 
 2. **Open the project in STM32CubeIDE**
    ```text
-   File → Open Projects from File System → Select APC_Project folder
+   File → Open Projects from File System → Select MACS folder
    ```
 
 3. **Build the project**
