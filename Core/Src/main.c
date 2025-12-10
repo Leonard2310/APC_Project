@@ -2,7 +2,7 @@
 /**
  ******************************************************************************
  * @file           : main.c
- * @brief          : Main program body - Museum Access Control System
+ * @brief          : Main program body - MACS (Museum Access Control System)
  * @description    : This project implements an automated ticketing and access
  *                   control system for a museum using PIR motion sensors,
  *                   servo motors for turnstiles/gates, OLED display for user
@@ -10,7 +10,7 @@
  *                   for ticket purchase confirmation.
  *
  * @hardware       : STM32F303VCT6 Discovery Board
- *                   - PIR1 (PB4): Entrance sensor - detects visitors approaching (polled)
+ *                   - PIR1 (PB4): Entrance sensor - detects visitors approaching (EXTI4 configured, polled in main)
  *                   - PIR2 (PB2): Entry gate sensor - confirms visitor entry (EXTI2)
  *                   - PIR3 (PB9): Ambient lighting sensor - independent (EXTI9)
  *                   - PIR4 (PB15): Exit sensor - detects visitors leaving (EXTI15)
@@ -22,16 +22,15 @@
  *                   - Red LED (PE9): Transaction in progress
  *                   - Green LED (PE10): Access granted
  *                   - PIR3_LED (PB3), PIR3_LED2 (PB11): Ambient lighting
- *                   - Button (PB8): Ticket purchase confirmation
+ *                   - Button (PB8): Ticket purchase confirmation (active low with pull-up)
  *
  * @features       : - Visitor counter with max capacity (4 visitors)
  *                   - Automatic ticket sales blocking when museum is full
  *                   - Smooth servo motor movements for gates
  *                   - Independent ambient lighting system
- *                   - Exit gate controlled entirely by TIM6 interrupt (15ms period)
+ *                   - Exit gate controlled entirely by TIM6 interrupt (25ms period)
  *
  * @authors        : Leonardo Catello, Salvatore Maione, Luisa Ciniglio, Roberta Granata
- * @version        : 1.2 - Fixed TIM6 timing for exit gate
  ******************************************************************************
  */
 /* USER CODE END Header */
@@ -46,12 +45,12 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-/* External timer handles - declared in tim.c
+/* External timer handles - declared in tim.c, extern in tim.h
  * htim1: PWM timer for Servo3 (exit gate) on PB1, Channel 3N
  * htim2: PWM timer for Servo2 (entry gate) on PB10, Channel 3
  * htim3: PWM timer for Servo1 (ticket turnstile) on PB0, Channel 3
  * htim4: Base timer for PIR3 LED auto-off timeout (2 seconds)
- * htim6: Base timer for Servo3 movement control (15ms period) - NON-BLOCKING */
+ * htim6: Base timer for Servo3 movement control (25ms period) - NON-BLOCKING  */
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim4;
@@ -97,7 +96,7 @@ extern TIM_HandleTypeDef htim6;
 volatile uint8_t secondPIR_triggered = 0;
 
 /**
- * @brief State machine for exit gate operation (controlled by TIM6 interrupt every 15ms)
+ * @brief State machine for exit gate operation (controlled by TIM6 interrupt every 25ms)
  */
 typedef enum {
     EXIT_GATE_IDLE = 0,
@@ -107,7 +106,7 @@ typedef enum {
 } ExitGateState_t;
 
 volatile ExitGateState_t exit_gate_state = EXIT_GATE_IDLE;
-volatile uint16_t exit_gate_timer = 0;      // Counter for 5 second wait
+volatile uint16_t exit_gate_timer = 0;      // Counter for ~8 second wait
 volatile uint8_t exit_gate_angle = 0;       // Current servo angle
 
 /**
@@ -134,11 +133,11 @@ void SystemClock_Config(void);
 /**
  * @brief  Sets the servo motor to a specific angle
  * @param  htim: Pointer to the timer handle controlling the servo PWM
- * @param  channel: Timer channel (TIM_CHANNEL_3 or TIM_CHANNEL_4)
+ * @param  channel: Timer channel (TIM_CHANNEL_3 for all servos in this project)
  * @param  angle: Desired angle in degrees (0-180)
- * @note   Maps angle (0-180°) to pulse width (500-2500µs) for SG90 servo
+ * @note   Maps angle (0-180°) to pulse width (500-2500µs) for SG90/MS18 servo
  *         Standard servo timing: 500µs = 0°, 1500µs = 90°, 2500µs = 180°
- *         Timer configuration (TIM2/TIM3):
+ *         Timer configuration (TIM1/TIM2/TIM3):
  *         - Prescaler = 7 → Timer clock = 8MHz / 8 = 1MHz
  *         - Period = 19999 → PWM period = 20ms (50Hz)
  *         - Compare values 500-2500 directly map to µs
@@ -165,7 +164,7 @@ void Servo_SetAngle(TIM_HandleTypeDef *htim, uint32_t channel, uint8_t angle)
  *         - PIR2 (PB2, GPIO_PIN_2): Entry gate passage detection
  *         - PIR3 (PB9, GPIO_PIN_9): Ambient lighting activation
  *         - PIR4 (PB15, GPIO_PIN_15): Exit gate activation (only if visitors > 0)
- *         Note: PIR1 (PB4) is handled via polling in main loop
+ *         Note: PIR1 (PB4) is configured with EXTI but handled via polling in main loop
  * @retval None
  */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -212,10 +211,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
  * @brief  Timer period elapsed callback
  * @param  htim: Pointer to the timer handle that triggered the callback
  * @note   TIM4: Used to turn off ambient lighting LEDs after timeout (2s)
- *         TIM6: Used to control exit gate servo movement (15ms interrupts)
- *               - Opening: 0° → 180° in steps of 2° (90 steps × 15ms = 1.35s)
- *               - Wait: 333 interrupts × 15ms = 5 seconds
- *               - Closing: 180° → 0° in steps of 2° (90 steps × 15ms = 1.35s)
+ *         TIM6: Used to control exit gate servo movement (25ms interrupts)
+ *               - Opening: 0° → 180° in steps of 2° (90 steps × 25ms ≈ 2.25s)
+ *               - Wait: 333 interrupts × 25ms ≈ 8.3 seconds
+ *               - Closing: 180° → 0° in steps of 2° (90 steps × 25ms ≈ 2.25s)
  * @retval None
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -228,10 +227,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         HAL_TIM_Base_Stop_IT(&htim4);
     }
 
-    /* TIM6 callback - Control exit gate servo movement (called every 15ms)
-     * TIM6 Configuration: Prescaler=119, Period=999
-     * Timer frequency: 8MHz / 120 = 66.67kHz
-     * Interrupt period: 1000 / 66.67kHz = 15ms */
+    /* TIM6 callback - Control exit gate servo movement (called every 25ms)
+     * TIM6 Configuration: Prescaler=199, Period=999
+     * Timer frequency: 8MHz / 200 = 40kHz
+     * Interrupt period: 1000 / 40kHz = 25ms */
     else if (htim->Instance == TIM6)
     {
         switch (exit_gate_state)
@@ -247,15 +246,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                 {
                     exit_gate_angle = 180;
                     exit_gate_state = EXIT_GATE_OPEN;
-                    exit_gate_timer = 0;  // Reset counter for 5 second wait
+                    exit_gate_timer = 0;  // Reset counter for ~8 second wait
                 }
                 Servo_SetAngle(&htim1, TIM_CHANNEL_3, exit_gate_angle);
                 break;
 
             case EXIT_GATE_OPEN:
-                // Wait 5 seconds with gate fully open
+                // Wait ~8 seconds with gate fully open
                 exit_gate_timer++;
-                if (exit_gate_timer >= 333)  // 333 × 15ms = 4995ms ≈ 5 seconds
+                if (exit_gate_timer >= 333)  // 333 × 25ms ≈ 8.3 seconds
                 {
                     exit_gate_state = EXIT_GATE_CLOSING;
                 }
@@ -534,7 +533,7 @@ int main(void)
                   ssd1306_WriteString("wait...", Font_11x18, White);
                   ssd1306_UpdateScreen();
 
-                  /* Disable EXTI4 (PIR1) to prevent new transactions during wait */
+                  /* Disable EXTI4 interrupt  */
                   HAL_NVIC_DisableIRQ(EXTI4_IRQn);
 
                   /* Clear flag and wait for PIR2 interrupt */
@@ -605,7 +604,7 @@ int main(void)
 
                   HAL_Delay(2000);
 
-                  /* Re-enable EXTI4 interrupt (PIR1) */
+                  /* Re-enable EXTI4 interrupt */
                   HAL_NVIC_EnableIRQ(EXTI4_IRQn);
               }
               else
@@ -641,7 +640,7 @@ int main(void)
        * EXIT GATE HANDLER - Fully independent via TIM6 interrupt
        * ================================================================
        * PIR4 triggers exit gate (Servo3) which is controlled entirely
-       * by TIM6 interrupt (every 15ms) - no manual handler needed
+       * by TIM6 interrupt (every 25ms) - no manual handler needed
        * Display update for visitor count happens automatically below
        * ================================================================ */
 
