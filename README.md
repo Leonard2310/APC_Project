@@ -1,5 +1,7 @@
 # MACS - Museum Access Control System
 
+<img width="1019" height="352" alt="MACS Logo" src="https://github.com/user-attachments/assets/4b7c4f5b-b0d7-47dd-9258-d15192b5bb24" />
+
 <p align="center">
    <img src="https://img.shields.io/badge/Platform-STM32F303VCT6-blue" alt="Platform">
    <img src="https://img.shields.io/badge/IDE-STM32CubeIDE-green" alt="IDE">
