@@ -1,5 +1,3 @@
-# MACS - Museum Access Control System
-
 <img width="1019" height="352" alt="MACS Logo" src="https://github.com/user-attachments/assets/4b7c4f5b-b0d7-47dd-9258-d15192b5bb24" />
 
 <p align="center">
