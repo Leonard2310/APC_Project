@@ -56,7 +56,7 @@ The project was developed using **STM32CubeIDE** and the firmware package **STM3
 | **OLED Display** | PB6/PB7 (I2C1) | SSD1306 128x64 – user feedback |
 | **Blue LED** | PE8 | System idle/ready |
 | **Red LED** | PE9 | Transaction in progress |
-| **Green LED** | PE10 | Access granted |
+ | **Orange LED** | PE10 | Access granted |
 | **Ambient LEDs** | PB3, PB11 | Lighting controlled by PIR3 |
 | **Push Button** | PB8 | Ticket purchase confirmation (active low) |
 
@@ -80,9 +80,9 @@ The project was developed using **STM32CubeIDE** and the firmware package **STM3
                     │                     │
     Button ────────►│ PB8 (Input Pull-up) │
                     │                     │
-    LED Blu ◄───────│ PE8                 │
-    LED Rosso ◄─────│ PE9                 │
-    LED Verde ◄─────│ PE10                │
+   Blue LED ◄──────│ PE8                 │
+   Red LED ◄───────│ PE9                 │
+   Orange LED ◄────│ PE10                │
     LED PIR3 ◄──────│ PB3, PB11           │
                     └─────────────────────┘
 ```

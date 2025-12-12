@@ -297,7 +297,7 @@ void Update_Display_Idle(char *buffer)
 {
     ssd1306_Fill(Black);
     ssd1306_SetCursor(20, 5);
-    ssd1306_WriteString("MUSEUM", Font_11x18, White);
+    ssd1306_WriteString("MACS", Font_11x18, White);
 
     if (visitor_count >= MAX_VISITORS)
     {
